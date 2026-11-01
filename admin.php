@@ -11,17 +11,17 @@ include "config/conexao.php";
 
 $mensagem = '';
 $prod_edit = null;
+$vars_edit = [];
 
 // Lógica de Alterar Status (Ativo/Inativo)
 if (isset($_GET['status_id'])) {
     $id = (int)$_GET['status_id'];
-    // Busca o status atual
     $res = $conn->query("SELECT ativo FROM produtos WHERE id = $id");
     if ($res->num_rows > 0) {
         $row = $res->fetch_assoc();
-        $novo_status = $row['ativo'] ? 0 : 1; // Inverte o valor
+        $novo_status = $row['ativo'] ? 0 : 1;
         $conn->query("UPDATE produtos SET ativo = $novo_status WHERE id = $id");
-        header("Location: admin.php"); // Recarrega a página para limpar a URL
+        header("Location: admin.php");
         exit;
     }
 }
@@ -45,6 +45,12 @@ if (isset($_GET['editar'])) {
     $res = $conn->query("SELECT * FROM produtos WHERE id = $id");
     if ($res->num_rows > 0) {
         $prod_edit = $res->fetch_assoc();
+        
+        // Busca variações
+        $res_vars = $conn->query("SELECT * FROM produto_variacoes WHERE produto_id = $id");
+        while ($v = $res_vars->fetch_assoc()) {
+            $vars_edit[] = $v;
+        }
     }
 }
 
@@ -53,7 +59,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $nome = trim($_POST['nome']);
     $preco = str_replace(',', '.', $_POST['preco']);
     $descricao = trim($_POST['descricao']);
-    $ordem = (int)$_POST['ordem']; // Novo campo de ordenação
+    $ordem = (int)$_POST['ordem'];
+    $estoque = (int)$_POST['estoque']; // Novo campo de estoque geral
     $imagem_path = $_POST['imagem_atual'] ?? '';
 
     // Upload de Imagem
@@ -69,28 +76,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
+    $produto_id = null;
+
     if (isset($_POST['cadastrar']) && !empty($nome) && !empty($preco)) {
         // Inserir
-        $stmt = $conn->prepare("INSERT INTO produtos (nome, preco, descricao, imagem, ordem) VALUES (?, ?, ?, ?, ?)");
-        $stmt->bind_param("sdssi", $nome, $preco, $descricao, $imagem_path, $ordem);
-        
-        if ($stmt->execute()) $mensagem = "<div class='alert alert-success'>Produto cadastrado com sucesso!</div>";
-        else $mensagem = "<div class='alert alert-danger'>Erro: " . $conn->error . "</div>";
-        $stmt->close();
-        
-    } elseif (isset($_POST['atualizar']) && !empty($nome) && !empty($preco)) {
-        // Atualizar
-        $id = (int)$_POST['id'];
-        $stmt = $conn->prepare("UPDATE produtos SET nome=?, preco=?, descricao=?, imagem=?, ordem=? WHERE id=?");
-        $stmt->bind_param("sdssii", $nome, $preco, $descricao, $imagem_path, $ordem, $id);
+        $stmt = $conn->prepare("INSERT INTO produtos (nome, preco, descricao, imagem, ordem, estoque) VALUES (?, ?, ?, ?, ?, ?)");
+        $stmt->bind_param("sdssii", $nome, $preco, $descricao, $imagem_path, $ordem, $estoque);
         
         if ($stmt->execute()) {
-            $mensagem = "<div class='alert alert-success'>Produto atualizado com sucesso!</div>";
-            $prod_edit = null; // Limpa o form após atualizar
+            $produto_id = $conn->insert_id;
+            $mensagem = "<div class='alert alert-success'>Produto cadastrado com sucesso!</div>";
         } else {
             $mensagem = "<div class='alert alert-danger'>Erro: " . $conn->error . "</div>";
         }
         $stmt->close();
+        
+    } elseif (isset($_POST['atualizar']) && !empty($nome) && !empty($preco)) {
+        // Atualizar
+        $produto_id = (int)$_POST['id'];
+        $stmt = $conn->prepare("UPDATE produtos SET nome=?, preco=?, descricao=?, imagem=?, ordem=?, estoque=? WHERE id=?");
+        $stmt->bind_param("sdssiii", $nome, $preco, $descricao, $imagem_path, $ordem, $estoque, $produto_id);
+        
+        if ($stmt->execute()) {
+            $mensagem = "<div class='alert alert-success'>Produto atualizado com sucesso!</div>";
+            $prod_edit = null;
+            $vars_edit = [];
+        } else {
+            $mensagem = "<div class='alert alert-danger'>Erro: " . $conn->error . "</div>";
+        }
+        $stmt->close();
+    }
+
+    // Salvar Variações (Substitui as antigas pelas novas)
+    if ($produto_id) {
+        $conn->query("DELETE FROM produto_variacoes WHERE produto_id = $produto_id");
+
+        if (isset($_POST['var_nome']) && is_array($_POST['var_nome'])) {
+            $stmt_var = $conn->prepare("INSERT INTO produto_variacoes (produto_id, nome_cor, cor_hex, estoque) VALUES (?, ?, ?, ?)");
+            for ($i = 0; $i < count($_POST['var_nome']); $i++) {
+                $v_nome = trim($_POST['var_nome'][$i]);
+                $v_hex = trim($_POST['var_hex'][$i]);
+                $v_est = (int)$_POST['var_estoque'][$i];
+                
+                if (!empty($v_nome)) {
+                    $stmt_var->bind_param("issi", $produto_id, $v_nome, $v_hex, $v_est);
+                    $stmt_var->execute();
+                }
+            }
+            $stmt_var->close();
+        }
     }
 }
 ?>
@@ -106,6 +140,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <link rel="icon" type="image/png" href="assets/images/logo.png">
     <style>
         .cursor-pointer { cursor: pointer; }
+        .variation-row { background: #f8f9fa; border-radius: 8px; padding: 10px; margin-bottom: 10px; border: 1px solid #dee2e6; }
     </style>
 </head>
 <body class="bg-light">
@@ -135,23 +170,67 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <label class="form-label">Nome do Produto</label>
                         <input type="text" name="nome" class="form-control" value="<?= $prod_edit ? htmlspecialchars($prod_edit['nome']) : '' ?>" required>
                     </div>
-                    <div class="col-md-4">
+                    <div class="col-md-3">
                         <label class="form-label">Preço (R$)</label>
                         <input type="text" name="preco" class="form-control" placeholder="Ex: 21,50" value="<?= $prod_edit ? number_format($prod_edit['preco'], 2, ',', '') : '' ?>" required>
                     </div>
-                    <div class="col-md-3">
-                        <label class="form-label">Ordem de Exibição</label>
-                        <input type="number" name="ordem" class="form-control" value="<?= $prod_edit ? (int)$prod_edit['ordem'] : '0' ?>" title="Menores números aparecem primeiro">
+                    <div class="col-md-2">
+                        <label class="form-label">Estoque Geral</label>
+                        <input type="number" name="estoque" class="form-control" value="<?= $prod_edit ? (int)$prod_edit['estoque'] : '0' ?>" min="0" title="Para produtos sem variação">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Ordem</label>
+                        <input type="number" name="ordem" class="form-control" value="<?= $prod_edit ? (int)$prod_edit['ordem'] : '0' ?>">
                     </div>
                     <div class="col-12">
                         <label class="form-label">Descrição / Mais informações</label>
                         <textarea name="descricao" class="form-control" rows="2"><?= $prod_edit ? htmlspecialchars($prod_edit['descricao']) : '' ?></textarea>
                     </div>
-                    <div class="col-md-8">
+                    <div class="col-md-12">
                         <label class="form-label">Foto do Produto <?= $prod_edit && $prod_edit['imagem'] ? '(Deixe em branco para manter a atual)' : '' ?></label>
                         <input type="file" name="imagem" class="form-control" accept="image/*">
                     </div>
-                    <div class="col-md-4 d-flex align-items-end">
+
+                    <!-- Seção de Variações -->
+                    <div class="col-12 mt-4">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h6 class="mb-0 fw-bold">Variações (Cores e Estoque)</h6>
+                            <button type="button" class="btn btn-sm btn-outline-success" id="add-variation">
+                                <i class="bi bi-plus-circle"></i> Adicionar Variação
+                            </button>
+                        </div>
+                        <small class="text-muted d-block mb-3">Se o produto possui variações, o estoque geral acima será ignorado no frontend.</small>
+                        
+                        <div id="variations-container">
+                            <?php 
+                            if (!empty($vars_edit)): 
+                                foreach ($vars_edit as $var):
+                            ?>
+                                <div class="row g-2 align-items-end variation-row">
+                                    <div class="col-md-4">
+                                        <label class="form-label small">Nome da Cor</label>
+                                        <input type="text" name="var_nome[]" class="form-control form-control-sm" value="<?= htmlspecialchars($var['nome_cor']) ?>" required>
+                                    </div>
+                                    <div class="col-md-2">
+                                        <label class="form-label small">Cor (Hex)</label>
+                                        <input type="color" name="var_hex[]" class="form-control form-control-sm form-control-color w-100" value="<?= htmlspecialchars($var['cor_hex']) ?>">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small">Estoque desta variação</label>
+                                        <input type="number" name="var_estoque[]" class="form-control form-control-sm" value="<?= (int)$var['estoque'] ?>" min="0" required>
+                                    </div>
+                                    <div class="col-md-2 text-end">
+                                        <button type="button" class="btn btn-sm btn-danger remove-variation w-100"><i class="bi bi-trash"></i></button>
+                                    </div>
+                                </div>
+                            <?php 
+                                endforeach;
+                            endif; 
+                            ?>
+                        </div>
+                    </div>
+
+                    <div class="col-md-12 mt-4">
                         <?php if ($prod_edit): ?>
                             <button type="submit" name="atualizar" class="btn btn-primary w-100">Salvar Alterações</button>
                         <?php else: ?>
@@ -173,15 +252,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <th>Foto</th>
                     <th>Nome</th>
                     <th>Preço</th>
+                    <th>Estoque</th>
                     <th>Status</th>
                     <th class="text-end">Ações</th>
                 </tr>
             </thead>
             <tbody>
                 <?php
-                // A query agora ordena pela coluna 'ordem' (crescente) e depois pelo ID
                 $resultado = $conn->query("SELECT * FROM produtos ORDER BY ordem ASC, id DESC");
                 while ($prod = $resultado->fetch_assoc()):
+                    // Verifica quantidade de variações
+                    $q_vars = $conn->query("SELECT COUNT(*) as qtd, SUM(estoque) as total_est FROM produto_variacoes WHERE produto_id = " . $prod['id'])->fetch_assoc();
+                    $has_vars = $q_vars['qtd'] > 0;
                 ?>
                 <tr>
                     <td class="fw-bold text-muted"><?= isset($prod['ordem']) ? $prod['ordem'] : '0' ?></td>
@@ -192,10 +274,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <span class="text-muted">Sem foto</span>
                         <?php endif; ?>
                     </td>
-                    <td><?= htmlspecialchars($prod['nome']) ?></td>
+                    <td>
+                        <?= htmlspecialchars($prod['nome']) ?>
+                        <?php if($has_vars): ?>
+                            <br><span class="badge bg-info text-dark" style="font-size: 0.7rem;"><?= $q_vars['qtd'] ?> variações</span>
+                        <?php endif; ?>
+                    </td>
                     <td>R$ <?= number_format($prod['preco'], 2, ',', '.') ?></td>
                     <td>
-                        <!-- Botão clicável para alterar o status -->
+                        <?php if($has_vars): ?>
+                            <span class="text-muted"><?= $q_vars['total_est'] ?> (Nas vars)</span>
+                        <?php else: ?>
+                            <?= $prod['estoque'] ?>
+                        <?php endif; ?>
+                    </td>
+                    <td>
                         <a href="admin.php?status_id=<?= $prod['id'] ?>" class="text-decoration-none">
                             <span class="badge bg-<?= isset($prod['ativo']) && $prod['ativo'] ? 'success' : 'secondary' ?> cursor-pointer p-2">
                                 <?= isset($prod['ativo']) && $prod['ativo'] ? 'Ativo' : 'Inativo' ?>
@@ -216,6 +309,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </table>
     </div>
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const container = document.getElementById('variations-container');
+    const btnAdd = document.getElementById('add-variation');
+
+    btnAdd.addEventListener('click', function() {
+        const row = document.createElement('div');
+        row.className = 'row g-2 align-items-end variation-row';
+        row.innerHTML = `
+            <div class="col-md-4">
+                <label class="form-label small">Nome da Cor</label>
+                <input type="text" name="var_nome[]" class="form-control form-control-sm" placeholder="Ex: Azul Celeste" required>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small">Cor (Hex)</label>
+                <input type="color" name="var_hex[]" class="form-control form-control-sm form-control-color w-100" value="#000000">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label small">Estoque</label>
+                <input type="number" name="var_estoque[]" class="form-control form-control-sm" value="0" min="0" required>
+            </div>
+            <div class="col-md-2 text-end">
+                <button type="button" class="btn btn-sm btn-danger remove-variation w-100"><i class="bi bi-trash"></i></button>
+            </div>
+        `;
+        container.appendChild(row);
+    });
+
+    container.addEventListener('click', function(e) {
+        if (e.target.closest('.remove-variation')) {
+            e.target.closest('.variation-row').remove();
+        }
+    });
+});
+</script>
 
 </body>
 </html>

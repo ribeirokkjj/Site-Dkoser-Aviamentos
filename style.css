@@ -48,10 +48,6 @@ body {
     z-index: 1030;
 }
 
-.custom-main-padding {
-    padding-bottom: 120px;
-}
-
 .btn-success {
     background-color: #2e8b57;
     border-color: #2e8b57;
@@ -65,4 +61,17 @@ body {
 .banner p {
     text-wrap: balance;
     margin: 0 auto; /* Mantém o texto centrado no ecrã */
+}
+
+/* Esconde as setinhas padrão do input type="number" (Chrome, Safari, Edge, Opera) */
+input[type=number]::-webkit-inner-spin-button, 
+input[type=number]::-webkit-outer-spin-button { 
+    -webkit-appearance: none;
+    margin: 0; 
+}
+
+/* Esconde no Firefox */
+input[type=number] {
+    -moz-appearance: textfield;
+    appearance: textfield;
 }
